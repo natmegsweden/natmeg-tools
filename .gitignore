@@ -1,0 +1,5 @@
+# System junk
+.DS_Store
+
+# Cache
+__pycache__

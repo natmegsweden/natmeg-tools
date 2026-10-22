@@ -1,0 +1,56 @@
+
+# Example pipeline for EEG-fMRI artifact removal
+
+
+```{python}
+# Load packages
+from eeg.fmri import remove_bcg_obs, remove_gradient_artifacts
+
+```
+
+## Read data
+```{python}
+# TODO: Replace with the project-specific data loading step.
+
+```
+
+## Remove gradient
+
+```{python}
+# TODO: Apply gradient removal once its API accepts the recording.
+gradient_cleaned = remove_gradient_artifacts(raw)
+```
+
+
+## Find cardiac artifacts
+
+
+```{python}
+# TODO: Detect cardiac artifacts.
+cardiac_events = None
+```
+
+
+## Evaluate cardiac artifacts
+
+
+```{python}
+# TODO: Review or evaluate the detected cardiac artifacts.
+cardiac_report = None
+```
+
+## Remove cardioballistic artifacts
+
+
+```{python}
+# TODO: Apply cardioballistic artifact removal.
+cleaned = remove_bcg_obs(gradient_cleaned)
+```
+
+## Return clean data and report
+
+
+```{python}
+# TODO: Return or save the cleaned recording and report.
+cleaned, cardiac_report
+```
