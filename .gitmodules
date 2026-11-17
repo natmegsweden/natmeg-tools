@@ -1,0 +1,3 @@
+[submodule "opm"]
+	path = opm
+	url = git@github.com:natmegsweden/opm_utility_scripts.git
