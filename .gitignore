@@ -1,5 +1,26 @@
 # System junk
 .DS_Store
 
-# Cache
-__pycache__
+# Python environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Python build and test artifacts
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Quarto/Jupyter output
+.quarto/
+.jupyter_cache/
+_site/
+*tests
+*/*tests
+.kilo

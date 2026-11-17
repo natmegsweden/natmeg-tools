@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lab-notebook"
+version = "0.1.0"
+description = "A local notebook for lab recordings and bad-channel tracking"
+requires-python = ">=3.11"
+dependencies = ["streamlit>=1.55", "mne>=1.8", "tzdata>=2024.1"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools]
+packages = ["lab_notebook"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
