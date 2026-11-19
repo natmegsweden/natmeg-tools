@@ -24,16 +24,17 @@ The recordings path should point directly to the folder containing project direc
       recording_raw.fif
 ```
 
-The Lab export directory must be separate from the `Recordings` tree. Project and session identities are discovered from folders when the app loads. If recording paths change, matching project/session names reuse existing notebook records; old files are not moved or deleted. Existing `config.toml` files are no longer read or imported. An existing SQLite database retains its notes/channel history, but requires fresh admin/path setup if it has no credentials/settings.
+The Lab export directory must be separate from the `Recordings` tree. Project and session identities are discovered from folders when the app loads. If recording paths change, matching project/session names reuse existing notebook records; old files are not moved or deleted. An existing SQLite database retains its notes/channel history, but requires fresh admin/path setup if it has no credentials/settings.
 
 ## Features
 
 - Lab announcements are append-only. Everyone sees the latest announcement with a local timestamp; previous announcements are expandable. Only the admin can publish announcements or change settings.
 - Project and Recording notes remain available without login.
+- Saved Project/Recording notes appear below their editors after posting. In the Recording column, **Bad channels** opens a modal beside **Add recording note**; saving a channel snapshot keeps the modal open until dismissed.
 - Bad Channels are session-only complete-set snapshots using `s1` through `s136`. Every explicit save records a timestamped check, including unchanged and empty selections. The latest snapshot is current; older snapshots are scrollable under “Show previous bad channels.”
 - “Get bad from last record” extracts an `s` plus digits channel ID from the newest session `.fif` names (for example, `VendorChannelS72suffix` becomes `s72`). Unmatched or ambiguous bad-channel names are rejected. Channels absent from that FIF's channel list are automatically selected as bad, greyed in the multiselect, and listed in muted gray beneath it. Review and explicitly save the resulting snapshot.
 - Admin **Export bads CSV** downloads all historical session snapshots, including archived sessions. It excludes notes and announcements.
-- Automatic JSON exports are written atomically to `lab.json` and `bad_channel_records.json` in the Lab export directory, `project.json` in each project directory, and `recording.json` in each session directory. Symlinked project/session folders are ignored; pre-existing JSON files without the app ownership marker are not overwritten. Export failures are reported while committed database changes are retained.
+- Automatic JSON exports are written atomically to `annotations_lab.json` and `bad_channel_records.json` in the Lab export directory, `annotations_project.json` in each project directory, and `annotations_recording.json` in each session directory. Symlinked project/session folders are ignored; pre-existing JSON files without the app ownership marker are not overwritten. Export failures are reported while committed database changes are retained.
 
 ### UI colors
 

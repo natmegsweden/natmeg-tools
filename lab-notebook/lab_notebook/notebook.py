@@ -46,7 +46,19 @@ def connect(path: Path) -> sqlite3.Connection:
         path.chmod(0o600)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
+    try:
+        _initialize_database(db)
+    except Exception:
+        db.rollback()
+        db.close()
+        raise
+    return db
+
+
+def _initialize_database(db: sqlite3.Connection) -> None:
+    """Serialize schema creation and additive migrations without changing history."""
     db.executescript("""
+        BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS notes (
             id INTEGER PRIMARY KEY, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL,
             body TEXT NOT NULL, created_at TEXT NOT NULL
@@ -76,7 +88,8 @@ def connect(path: Path) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS bad_channel_snapshots (
             id INTEGER PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT NOT NULL,
             channels_json TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', source_file TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL, available_channels_json TEXT,
+            availability_source_file TEXT, classification_known INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS notes_scope ON notes(scope_type, scope_id, id);
         CREATE INDEX IF NOT EXISTS bad_snapshots_session ON bad_channel_snapshots(project_id, session_id, id);
@@ -85,9 +98,16 @@ def connect(path: Path) -> sqlite3.Connection:
         CREATE TRIGGER IF NOT EXISTS bad_snapshots_no_delete BEFORE DELETE ON bad_channel_snapshots
         BEGIN SELECT RAISE(ABORT, 'bad-channel snapshots are immutable'); END;
     """)
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(bad_channel_snapshots)")}
+    for name, definition in (
+        ("available_channels_json", "TEXT"),
+        ("availability_source_file", "TEXT"),
+        ("classification_known", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if name not in columns:
+            db.execute(f"ALTER TABLE bad_channel_snapshots ADD COLUMN {name} {definition}")
     db.execute("INSERT OR IGNORE INTO admin_security_state(id, generation) VALUES(1,0)")
     db.commit()
-    return db
 
 
 def settings_row(db: sqlite3.Connection) -> sqlite3.Row | None:
@@ -339,8 +359,19 @@ def selection_with_missing_channels(channels: list[str] | tuple[str, ...],
 def save_channel_snapshot(db: sqlite3.Connection, config: AppConfig, project_id: str,
                           session_id: str, channels: list[str] | tuple[str, ...],
                           reason: str, source_file: str | None,
-                          expected_latest_id: int | None) -> int:
+                          expected_latest_id: int | None, *,
+                          available_channels: list[str] | tuple[str, ...] | None = None,
+                          availability_source_file: str | None = None) -> int:
+    """Append a classified selection; callers retain availability across manual edits.
+
+    None availability means a manual selection (all bad); an empty list means
+    known empty availability (all selected channels missing). Exact-selection
+    provenance in source_file is independent of availability_source_file.
+    """
     canonical = _canonical_channels(channels)
+    available = _canonical_channels(available_channels) if available_channels is not None else None
+    if available is None and availability_source_file is not None:
+        raise ValueError("Availability source requires known available channels")
     try:
         db.execute("BEGIN IMMEDIATE")
         current = latest_snapshot(db, project_id, session_id)
@@ -348,8 +379,11 @@ def save_channel_snapshot(db: sqlite3.Connection, config: AppConfig, project_id:
         if current_id != expected_latest_id:
             raise SnapshotConflict("Bad-channel history changed in another session. Reload before saving.")
         cursor = db.execute("""INSERT INTO bad_channel_snapshots
-            (project_id, session_id, channels_json, reason, source_file, created_at)
-            VALUES(?,?,?,?,?,?)""", (project_id, session_id, json.dumps(canonical), reason.strip(), source_file, utc_now()))
+            (project_id, session_id, channels_json, reason, source_file, created_at,
+             available_channels_json, availability_source_file, classification_known)
+            VALUES(?,?,?,?,?,?,?,?,1)""", (project_id, session_id, json.dumps(canonical),
+                reason.strip(), source_file, utc_now(),
+                json.dumps(available) if available is not None else None, availability_source_file))
         snapshot_id = int(cursor.lastrowid)
         db.commit()
     except Exception:
@@ -362,12 +396,28 @@ def save_channel_snapshot(db: sqlite3.Connection, config: AppConfig, project_id:
     return snapshot_id
 
 
-def _snapshot_dict(row: sqlite3.Row) -> dict[str, Any]:
+def snapshot_dict(row: sqlite3.Row) -> dict[str, Any]:
+    """Serialize a saved snapshot for UI display and version-2 JSON/CSV exports.
+
+    Legacy rows retain their exclusion selection but have unknown categories.
+    Missing channels are selected exclusions absent from known availability,
+    not every channel absent from the recording.
+    """
+    excluded = json.loads(row["channels_json"])
+    known = bool(row["classification_known"])
+    available = (json.loads(row["available_channels_json"])
+                 if known and row["available_channels_json"] is not None else None)
+    present = set(available) if available is not None else set(excluded)
     return {
         "snapshot_id": int(row["id"]),
         "project_id": row["project_id"],
         "session_id": row["session_id"],
-        "channels": json.loads(row["channels_json"]),
+        "excluded_channels": excluded,
+        "bad_channels": [channel for channel in excluded if channel in present] if known else None,
+        "missing_channels": [channel for channel in excluded if channel not in present] if known else None,
+        "available_channels": available,
+        "availability_source_file": row["availability_source_file"],
+        "classification_known": known,
         "reason": row["reason"],
         "source_file": row["source_file"],
         "created_at": row["created_at"],
@@ -377,7 +427,24 @@ def _snapshot_dict(row: sqlite3.Row) -> dict[str, Any]:
 def _all_snapshots(db: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = db.execute("""SELECT * FROM bad_channel_snapshots
         ORDER BY created_at, id""").fetchall()
-    return [_snapshot_dict(row) for row in rows]
+    return [snapshot_dict(row) for row in rows]
+
+
+def _json_snapshots_by_session(snapshots: list[dict[str, Any]]) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """Group aggregate JSON history by project and session identifiers."""
+    projects: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for snapshot in snapshots:
+        project_sessions = projects.setdefault(snapshot["project_id"], {})
+        project_sessions.setdefault(snapshot["session_id"], []).append({
+            key: value for key, value in snapshot.items()
+            if key not in {"project_id", "session_id", "available_channels"}
+        })
+    return projects
+
+
+def _json_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return a snapshot without internal channel-availability details."""
+    return {key: value for key, value in snapshot.items() if key != "available_channels"}
 
 
 def _atomic_json(path: Path, data: dict[str, Any]) -> None:
@@ -419,7 +486,7 @@ def _recording_dir(config: AppConfig, path: Path) -> Path:
 def _persist_export(db: sqlite3.Connection, config: AppConfig, scope: Scope) -> None:
     discovered = discover(config)
     if scope[0] == "lab":
-        _atomic_json(config.lab_export_dir / "lab.json", {
+        _atomic_json(config.lab_export_dir / "annotations_lab.json", {
             "exported_at": utc_now(), "notes": [dict(row) for row in active_notes(db, ("lab", "lab"))],
             "projects": [project["id"] for project in discovered["projects"]],
         })
@@ -429,7 +496,7 @@ def _persist_export(db: sqlite3.Connection, config: AppConfig, scope: Scope) -> 
         if project is None:
             raise FileNotFoundError(f"Project directory no longer exists: {scope[1]}")
         project_dir = _recording_dir(config, project["path"])
-        _atomic_json(project_dir / "project.json", {
+        _atomic_json(project_dir / "annotations_project.json", {
             "exported_at": utc_now(), "project_id": project["id"],
             "notes": [dict(row) for row in active_notes(db, ("project", project["id"]))],
         })
@@ -441,17 +508,22 @@ def _persist_export(db: sqlite3.Connection, config: AppConfig, scope: Scope) -> 
         if session is None:
             raise FileNotFoundError(f"Recording session directory no longer exists: {scope[1]}")
         session_dir = _recording_dir(config, session["path"])
-        history = [_snapshot_dict(row) for row in snapshot_history(db, project_id, session_id)]
+        history = [_json_snapshot(snapshot_dict(row))
+                   for row in snapshot_history(db, project_id, session_id)]
         current = history[0] if history else None
-        _atomic_json(session_dir / "recording.json", {
+        _atomic_json(session_dir / "annotations_recording.json", {
             "exported_at": utc_now(), "project_id": project_id, "session_id": session_id,
             "notes": [dict(row) for row in active_notes(db, ("session", scope[1]))],
-            "bad_channel_snapshot_schema_version": 1,
-            "current_bad_channels": current["channels"] if current else [],
+            "bad_channel_snapshot_schema_version": 2,
+            "current_bad_channels": current["bad_channels"] if current else [],
+            "current_missing_channels": current["missing_channels"] if current else [],
+            "current_excluded_channels": current["excluded_channels"] if current else [],
+            "current_classification_known": current["classification_known"] if current else False,
             "bad_channel_snapshots": history,
         })
         _atomic_json(config.lab_export_dir / "bad_channel_records.json", {
-            "exported_at": utc_now(), "schema_version": 1, "records": _all_snapshots(db),
+            "exported_at": utc_now(), "schema_version": 2,
+            "records": _json_snapshots_by_session(_all_snapshots(db)),
         })
         return
     raise ValueError(f"Unsupported export scope: {scope}")
@@ -477,13 +549,20 @@ def export_bads_csv(db: sqlite3.Connection, generation: int) -> str:
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\r\n")
     writer.writerow(["snapshot_id", "project_id", "session_id", "created_at_utc",
-                     "bad_channels", "reason", "source_file"])
+                     "bad_channels", "missing_channels", "excluded_channels", "classification_known",
+                     "available_channels", "reason", "source_file", "availability_source_file"])
     for item in snapshots:
         writer.writerow([
             item["snapshot_id"], _format_csv_cell(item["project_id"]),
             _format_csv_cell(item["session_id"]), item["created_at"],
-            _format_csv_cell(", ".join(item["channels"])), _format_csv_cell(item["reason"]),
+            _format_csv_cell(", ".join(item["bad_channels"] or [])),
+            _format_csv_cell(", ".join(item["missing_channels"] or [])),
+            _format_csv_cell(", ".join(item["excluded_channels"])),
+            str(item["classification_known"]).lower(),
+            _format_csv_cell(", ".join(item["available_channels"] or [])),
+            _format_csv_cell(item["reason"]),
             _format_csv_cell(item["source_file"] or ""),
+            _format_csv_cell(item["availability_source_file"] or ""),
         ])
     return output.getvalue()
 

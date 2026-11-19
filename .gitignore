@@ -23,4 +23,8 @@ htmlcov/
 _site/
 *tests
 */*tests
+
+# Agents
 .kilo
+.agents
+.claude
