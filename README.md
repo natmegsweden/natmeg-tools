@@ -1,6 +1,6 @@
 # NATMEG Tools
 
-This repository contains optional research tools for OPM-MEG, EEG-fMRI, and a local Lab Notebook. The root project is a lightweight dependency bundle: install only the dependencies for the components you need.
+This repository contains optional research tools for OPM-MEG, EEG-fMRI [under development], and a local Lab Notebook. The root project is a lightweight dependency bundle: install only the dependencies for the components you need.
 
 ## Requirements
 
@@ -25,10 +25,10 @@ git submodule update --init --recursive
 Install one component's dependencies from the repository root. `uv sync` creates or updates `.venv` and uses the checked-in `uv.lock`:
 
 ```sh
-uv sync --extra opm
+uv sync --extra opm # submodule to natmegsweden/opm_utility_scripts
 uv sync --extra lab-notebook
-uv sync --extra eeg
-uv sync --extra tutorials
+uv sync --extra eeg # Under development
+uv sync --extra tutorials # Under development
 ```
 
 Install multiple dependency groups together by listing their extras:
